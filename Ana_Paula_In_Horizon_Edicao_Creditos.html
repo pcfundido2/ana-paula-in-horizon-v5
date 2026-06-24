@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ana Paula in Horizon</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #87cfff;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  canvas { display: block; }
+  #hud {
+    position: fixed;
+    left: 14px;
+    top: 12px;
+    color: #fff;
+    text-shadow: 0 2px 5px rgba(0,0,0,.65);
+    background: rgba(0,0,0,.22);
+    border: 1px solid rgba(255,255,255,.15);
+    backdrop-filter: blur(4px);
+    padding: 12px 14px;
+    border-radius: 14px;
+    min-width: 210px;
+    user-select: none;
+    pointer-events: none;
+  }
+  #title {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    letter-spacing: .5px;
+  }
+  .barWrap {
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255,255,255,.18);
+    margin-top: 6px;
+    margin-bottom: 10px;
+  }
+  .bar {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+  }
+  #speedText, #nitroText, #help {
+    font-size: 14px;
+    line-height: 1.35;
+  }
+  #help {
+    opacity: .9;
+    margin-top: 8px;
+    font-size: 12px;
+  }
+  #centerMsg {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding-bottom: 24px;
+    pointer-events: none;
+    color: rgba(255,255,255,.9);
+    text-shadow: 0 2px 8px rgba(0,0,0,.75);
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+  <div id="hud">
+    <div id="title">Ana Paula in Horizon</div>
+    <div id="speedText">Velocidade: 0 km/h</div>
+    <div class="barWrap"><div id="nitroBar" class="bar" style="background:#55d7ff;"></div></div>
+    <div id="nitroText">Nitro: 100%</div>
+    <div id="help">WASD dirigir • Espaço drift • Shift nitro</div>
+  </div>
+  <div id="centerMsg">Mundo procedural infinito • carro low-poly • foco em leveza</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script>
+  (function () {
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87cfff);
+    scene.fog = new THREE.Fog(0x87cfff, 120, 850);
+
+    const camera = new THREE.PerspectiveCamera(
+      68,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      1800
+    );
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      powerPreference: "high-performance"
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    document.body.appendChild(renderer.domElement);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 1.25);
+    scene.add(ambient);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 1.45);
+    sun.position.set(-120, 220, 80);
+    scene.add(sun);
+
+    const skyDome = new THREE.Mesh(
+      new THREE.SphereGeometry(2500, 18, 12),
+      new THREE.MeshBasicMaterial({ color: 0x8ad6ff, side: THREE.BackSide })
+    );
+    scene.add(skyDome);
+
+    // ====== Utils ======
+    const clamp = THREE.MathUtils.clamp;
+    const lerp = THREE.MathUtils.lerp;
+
+    function makeSeededRng(seed) {
+      let t = seed >>> 0;
+      return function () {
+        t += 0x6D2B79F5;
+        let r = Math.imul(t ^ (t >>> 15), 1 | t);
+        r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+        return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    function hash2(ix, iz, seed) {
+      let n = (ix * 374761393 + iz * 668265263 + seed * 1442695041) | 0;
+      n = (n ^ (n >> 13)) | 0;
+      n = Math.imul(n, 1274126177);
+      n = (n ^ (n >> 16)) | 0;
+      return (n >>> 0) / 4294967296;
+    }
+
+    function smoothstep(t) {
+      return t * t * (3 - 2 * t);
+    }
+
+    function valueNoise2D(x, z, seed) {
+      const x0 = Math.floor(x);
+      const z0 = Math.floor(z);
+      const x1 = x0 + 1;
+      const z1 = z0 + 1;
+      const sx = smoothstep(x - x0);
+      const sz = smoothstep(z - z0);
+      const n00 = hash2(x0, z0, seed);
+      const n10 = hash2(x1, z0, seed);
+      const n01 = hash2(x0, z1, seed);
+      const n11 = hash2(x1, z1, seed);
+      const ix0 = lerp(n00, n10, sx);
+      const ix1 = lerp(n01, n11, sx);
+      return lerp(ix0, ix1, sz);
+    }
+
+    function fbm(x, z, seed) {
+      let sum = 0;
+      let amp = 1;
+      let freq = 0.006;
+      for (let i = 0; i < 4; i++) {
+        sum += amp * valueNoise2D(x * freq, z * freq, seed + i * 97);
+        amp *= 0.5;
+        freq *= 2.03;
+      }
+      return sum;
+    }
+
+    // ====== World rules ======
+    const CHUNK_LEN = 120;
+    const CHUNK_RADIUS = 4;
+    const ROAD_WIDTH = 18;
+    const TERRAIN_WIDTH = 600;
+    const TERRAIN_SEG_X = 26;
+    const TERRAIN_SEG_Z = 18;
+    const ROAD_SEG_X = 10;
+    const ROAD_SEG_Z = 20;
+
+    function roadCenter(z) {
+      return (
+        18 * Math.sin(z * 0.0024) +
+        10 * Math.sin(z * 0.0061 + 1.6) +
+        6 * Math.sin(z * 0.0115 + 2.2)
+      );
+    }
+
+    function roadYaw(z) {
+      const d = 1.5;
+      return Math.atan2(roadCenter(z + d) - roadCenter(z - d), 2 * d);
+    }
+
+    function terrainHeight(x, z) {
+      const hills =
+        Math.sin(x * 0.0045) * 2.1 +
+        Math.cos(z * 0.0062) * 2.7 +
+        Math.sin((x + z) * 0.0032) * 3.2 +
+        Math.cos((x - z) * 0.0041) * 1.8;
+      const noise = (fbm(x + 1000, z - 800, 17) - 0.5) * 12;
+      let h = hills + noise;
+      const center = roadCenter(z);
+      const distRoad = Math.abs(x - center);
+      if (distRoad < 45) h *= 0.35;
+      return h;
+    }
+
+    function terrainSlopeAngles(x, z) {
+      const hL = terrainHeight(x - 2, z);
+      const hR = terrainHeight(x + 2, z);
+      const hF = terrainHeight(x, z + 2);
+      const hB = terrainHeight(x, z - 2);
+      return {
+        roll: Math.atan2(hL - hR, 4),
+        pitch: Math.atan2(hB - hF, 4)
+      };
+    }
+
+    function makeSurfaceGeometry(xMin, xMax, zMin, zMax, segX, segZ, heightFn, colorFn) {
+      const positions = [];
+      const colors = [];
+      const indices = [];
+
+      for (let iz = 0; iz <= segZ; iz++) {
+        const tz = iz / segZ;
+        const z = lerp(zMin, zMax, tz);
+        for (let ix = 0; ix <= segX; ix++) {
+          const tx = ix / segX;
+          const x = lerp(xMin, xMax, tx);
+          const y = heightFn(x, z);
+          positions.push(x, y, z);
+          if (colorFn) {
+            const c = colorFn(x, y, z);
+            colors.push(c.r, c.g, c.b);
+          }
+        }
+      }
+
+      for (let iz = 0; iz < segZ; iz++) {
+        for (let ix = 0; ix < segX; ix++) {
+          const a = ix + (segX + 1) * iz;
+          const b = ix + (segX + 1) * (iz + 1);
+          const c = ix + 1 + (segX + 1) * (iz + 1);
+          const d = ix + 1 + (segX + 1) * iz;
+          indices.push(a, b, d);
+          indices.push(b, c, d);
+        }
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      geo.setIndex(indices);
+      if (colorFn) geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+      geo.computeVertexNormals();
+      return geo;
+    }
+
+    function makeRoadGeometry(zMin, zMax, segX, segZ, width, yOffset, lateralOffset = 0) {
+      const positions = [];
+      const indices = [];
+      for (let iz = 0; iz <= segZ; iz++) {
+        const tz = iz / segZ;
+        const z = lerp(zMin, zMax, tz);
+        const center = roadCenter(z) + lateralOffset;
+        for (let ix = 0; ix <= segX; ix++) {
+          const tx = ix / segX;
+          const lateral = lerp(-width / 2, width / 2, tx);
+          const x = center + lateral;
+          const y = terrainHeight(x, z) + yOffset;
+          positions.push(x, y, z);
+        }
+      }
+      for (let iz = 0; iz < segZ; iz++) {
+        for (let ix = 0; ix < segX; ix++) {
+          const a = ix + (segX + 1) * iz;
+          const b = ix + (segX + 1) * (iz + 1);
+          const c = ix + 1 + (segX + 1) * (iz + 1);
+          const d = ix + 1 + (segX + 1) * iz;
+          indices.push(a, b, d);
+          indices.push(b, c, d);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      return geo;
+    }
+
+    function makeTerrainColor(x, y, z) {
+      const h = clamp((y + 10) / 26, 0, 1);
+      const g = lerp(0.26, 0.58, 1 - h);
+      const r = lerp(0.16, 0.38, h);
+      const b = lerp(0.14, 0.18, h);
+      return new THREE.Color(r, g, b);
+    }
+
+    // ====== Reusable geometries ======
+    const geoTrunk = new THREE.CylinderGeometry(0.25, 0.35, 3.2, 5);
+    const geoCrown = new THREE.ConeGeometry(1.7, 4.2, 6);
+    const geoRock = new THREE.DodecahedronGeometry(1.1, 0);
+    const geoHouseBody = new THREE.BoxGeometry(4.2, 3, 4.2);
+    const geoHouseRoof = new THREE.ConeGeometry(3.2, 2.2, 4);
+
+    const matTerrain = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    const matRoad = new THREE.MeshStandardMaterial({ color: 0x2f3136, roughness: 1, metalness: 0 });
+    const matLine = new THREE.MeshStandardMaterial({ color: 0xf5f5f5, roughness: 1, metalness: 0 });
+    const matShoulder = new THREE.MeshStandardMaterial({ color: 0x575757, roughness: 1, metalness: 0 });
+
+    const matTrunk = new THREE.MeshStandardMaterial({ color: 0x7a4a23, roughness: 1 });
+    const matLeaf = new THREE.MeshStandardMaterial({ color: 0x2f8f3c, roughness: 1, flatShading: true });
+    const matRock = new THREE.MeshStandardMaterial({ color: 0x8e8e8e, roughness: 1, flatShading: true });
+    const matHouse = new THREE.MeshStandardMaterial({ color: 0xe9d3ae, roughness: 1, flatShading: true });
+    const matRoof = new THREE.MeshStandardMaterial({ color: 0x8d3b2d, roughness: 1, flatShading: true });
+
+    // ====== Car ======
+    const car = new THREE.Group();
+    scene.add(car);
+
+    const carBody = new THREE.Mesh(
+      new THREE.BoxGeometry(2.6, 0.9, 5.2),
+      new THREE.MeshStandardMaterial({ color: 0xff2a2a, roughness: 0.6, metalness: 0.05, flatShading: true })
+    );
+    carBody.position.y = 0.95;
+    car.add(carBody);
+
+    const carCabin = new THREE.Mesh(
+      new THREE.BoxGeometry(2.0, 0.85, 2.2),
+      new THREE.MeshStandardMaterial({ color: 0xb80000, roughness: 0.65, metalness: 0.05, flatShading: true })
+    );
+    carCabin.position.set(0, 1.55, -0.35);
+    car.add(carCabin);
+
+    const wheelGeo = new THREE.CylinderGeometry(0.46, 0.46, 0.42, 10);
+    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 1 });
+    const wheels = [];
+    function addWheel(x, z) {
+      const w = new THREE.Mesh(wheelGeo, wheelMat);
+      w.rotation.z = Math.PI / 2;
+      w.position.set(x, 0.38, z);
+      car.add(w);
+      wheels.push(w);
+    }
+    addWheel(-1.15, 1.75);
+    addWheel(1.15, 1.75);
+    addWheel(-1.15, -1.75);
+    addWheel(1.15, -1.75);
+
+    const exhaust = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.08, 0.6, 6),
+      new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 1 })
+    );
+    exhaust.rotation.z = Math.PI / 2;
+    exhaust.position.set(-0.9, 0.55, -2.65);
+    car.add(exhaust);
+
+    // ====== Input ======
+    const keys = {
+      w: false, a: false, s: false, d: false,
+      shift: false, space: false
+    };
+
+    function mapKey(e) {
+      if (e.code === "Space") return "space";
+      return e.key.toLowerCase();
+    }
+
+    window.addEventListener("keydown", (e) => {
+      const k = mapKey(e);
+      if (k in keys) {
+        keys[k] = true;
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    window.addEventListener("keyup", (e) => {
+      const k = mapKey(e);
+      if (k in keys) {
+        keys[k] = false;
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    // ====== Chunk system ======
+    const chunks = new Map();
+
+    function disposeChunk(data) {
+      if (data.terrainGeo) data.terrainGeo.dispose();
+      if (data.roadGeo) data.roadGeo.dispose();
+      if (data.lineGeo) data.lineGeo.dispose();
+      if (data.shoulderLeftGeo) data.shoulderLeftGeo.dispose();
+      if (data.shoulderRightGeo) data.shoulderRightGeo.dispose();
+    }
+
+    function buildChunk(index) {
+      const zMin = index * CHUNK_LEN;
+      const zMax = zMin + CHUNK_LEN;
+      const midZ = zMin + CHUNK_LEN * 0.5;
+
+      const group = new THREE.Group();
+      group.name = "chunk_" + index;
+
+      // Terrain
+      const terrainGeo = makeSurfaceGeometry(
+        roadCenter(midZ) - TERRAIN_WIDTH * 0.5,
+        roadCenter(midZ) + TERRAIN_WIDTH * 0.5,
+        zMin,
+        zMax,
+        TERRAIN_SEG_X,
+        TERRAIN_SEG_Z,
+        terrainHeight,
+        makeTerrainColor
+      );
+      const terrain = new THREE.Mesh(terrainGeo, matTerrain);
+      group.add(terrain);
+
+      // Road
+      const roadGeo = makeRoadGeometry(zMin, zMax, ROAD_SEG_X, ROAD_SEG_Z, ROAD_WIDTH, 0.12);
+      const road = new THREE.Mesh(roadGeo, matRoad);
+      group.add(road);
+
+      // Road center line
+      const lineGeo = makeRoadGeometry(zMin, zMax, 1, ROAD_SEG_Z, 0.55, 0.16, 0);
+      const line = new THREE.Mesh(lineGeo, matLine);
+      group.add(line);
+
+      // Shoulders
+      const shoulderOffset = ROAD_WIDTH * 0.5 + 0.85;
+      const leftShoulderGeo = makeRoadGeometry(zMin, zMax, 1, ROAD_SEG_Z, 1.2, 0.10, -shoulderOffset);
+      const rightShoulderGeo = makeRoadGeometry(zMin, zMax, 1, ROAD_SEG_Z, 1.2, 0.10, shoulderOffset);
+
+      const shoulderLeft = new THREE.Mesh(leftShoulderGeo, matShoulder);
+      const shoulderRight = new THREE.Mesh(rightShoulderGeo, matShoulder);
+      group.add(shoulderLeft);
+      group.add(shoulderRight);
+      shoulderLeft.renderOrder = -1;
+      shoulderRight.renderOrder = -1;
+
+      // Props
+      const rng = makeSeededRng(index * 10007 + 1337);
+      const props = [];
+      const propCount = 9 + Math.floor(rng() * 4);
+
+      function addTree(px, py, pz, scale) {
+        const tree = new THREE.Group();
+        const trunk = new THREE.Mesh(geoTrunk, matTrunk);
+        trunk.scale.setScalar(scale);
+        trunk.position.y = 1.6 * scale;
+        tree.add(trunk);
+
+        const crown = new THREE.Mesh(geoCrown, matLeaf);
+        crown.scale.setScalar(scale);
+        crown.position.y = 4.0 * scale;
+        tree.add(crown);
+
+        tree.position.set(px, py, pz);
+        group.add(tree);
+        props.push({ x: px, y: py, z: pz, radius: 2.4 * scale, kind: "tree", object: tree });
+      }
+
+      function addRock(px, py, pz, scale) {
+        const rock = new THREE.Mesh(geoRock, matRock);
+        rock.scale.setScalar(scale);
+        rock.rotation.set(rng() * 0.7, rng() * 0.7, rng() * 0.7);
+        rock.position.set(px, py + 0.7 * scale, pz);
+        group.add(rock);
+        props.push({ x: px, y: py, z: pz, radius: 1.4 * scale, kind: "rock", object: rock });
+      }
+
+      function addHouse(px, py, pz, scale) {
+        const house = new THREE.Group();
+        const body = new THREE.Mesh(geoHouseBody, matHouse);
+        body.scale.setScalar(scale);
+        body.position.y = 1.5 * scale;
+        house.add(body);
+
+        const roof = new THREE.Mesh(geoHouseRoof, matRoof);
+        roof.scale.setScalar(scale);
+        roof.position.y = 3.45 * scale;
+        roof.rotation.y = Math.PI / 4;
+        house.add(roof);
+
+        house.position.set(px, py, pz);
+        house.rotation.y = rng() * Math.PI * 2;
+        group.add(house);
+        props.push({ x: px, y: py, z: pz, radius: 3.6 * scale, kind: "house", object: house });
+      }
+
+      for (let i = 0; i < propCount; i++) {
+        const z = zMin + 10 + rng() * (CHUNK_LEN - 20);
+        const center = roadCenter(z);
+        const side = rng() > 0.5 ? 1 : -1;
+        const far = 30 + rng() * 95;
+        const x = center + side * (ROAD_WIDTH * 0.5 + far);
+        const y = terrainHeight(x, z);
+
+        const roll = rng();
+        if (roll < 0.72) {
+          const scale = 0.85 + rng() * 1.4;
+          addTree(x, y, z, scale);
+        } else if (roll < 0.92) {
+          const scale = 0.9 + rng() * 1.0;
+          addRock(x, y, z, scale);
+        } else {
+          const scale = 0.8 + rng() * 0.65;
+          addHouse(x, y, z, scale);
+        }
+      }
+
+      scene.add(group);
+      chunks.set(index, { group, props, terrainGeo, roadGeo, lineGeo, shoulderLeft, shoulderRight });
+    }
+
+    function clearChunk(index) {
+      const data = chunks.get(index);
+      if (!data) return;
+      scene.remove(data.group);
+      disposeChunk(data);
+      chunks.delete(index);
+    }
+
+    function updateChunks(carZ) {
+      const current = Math.floor(carZ / CHUNK_LEN);
+      const keep = new Set();
+      for (let i = current - CHUNK_RADIUS; i <= current + CHUNK_RADIUS; i++) {
+        keep.add(i);
+        if (!chunks.has(i)) buildChunk(i);
+      }
+      for (const key of Array.from(chunks.keys())) {
+        if (!keep.has(key)) clearChunk(key);
+      }
+    }
+
+    // ====== Gameplay state ======
+    const clock = new THREE.Clock();
+    const velocity = new THREE.Vector3(0, 0, 0);
+    let yaw = 0;
+    let nitro = 100;
+    let wheelSpin = 0;
+    const particles = [];
+
+    const carBaseHeight = 1.05;
+    const carRadius = 1.7;
+    const nitroBar = document.getElementById("nitroBar");
+    const nitroText = document.getElementById("nitroText");
+    const speedText = document.getElementById("speedText");
+
+    function spawnNitroParticle(forward, right) {
+      const p = new THREE.Mesh(
+        new THREE.SphereGeometry(0.11 + Math.random() * 0.05, 6, 6),
+        new THREE.MeshBasicMaterial({ color: 0x66dfff })
+      );
+      const r = 2.4 + Math.random() * 0.4;
+      const side = (Math.random() - 0.5) * 1.2;
+      const up = 0.25 + Math.random() * 0.25;
+      p.position.copy(car.position)
+        .addScaledVector(forward, -r)
+        .addScaledVector(right, side);
+      p.position.y += up;
+      scene.add(p);
+      particles.push({
+        mesh: p,
+        vel: new THREE.Vector3(
+          -forward.x * (4 + Math.random() * 5) + right.x * (Math.random() - 0.5) * 1.2,
+          0.6 + Math.random() * 0.8,
+          -forward.z * (4 + Math.random() * 5) + right.z * (Math.random() - 0.5) * 1.2
+        ),
+        life: 0.35 + Math.random() * 0.2
+      });
+    }
+
+    function updateParticles(dt) {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.life -= dt;
+        p.mesh.position.x += p.vel.x * dt;
+        p.mesh.position.y += p.vel.y * dt;
+        p.mesh.position.z += p.vel.z * dt;
+        p.vel.y -= 3.2 * dt;
+        p.mesh.scale.multiplyScalar(0.985);
+        if (p.life <= 0) {
+          scene.remove(p.mesh);
+          p.mesh.geometry.dispose();
+          p.mesh.material.dispose();
+          particles.splice(i, 1);
+        }
+      }
+    }
+
+    function getForward(yawAngle) {
+      return new THREE.Vector3(Math.sin(yawAngle), 0, Math.cos(yawAngle));
+    }
+
+    function getRight(yawAngle) {
+      return new THREE.Vector3(Math.cos(yawAngle), 0, -Math.sin(yawAngle));
+    }
+
+    function updateCar(dt) {
+      const steerInput = (keys.a ? 1 : 0) - (keys.d ? 1 : 0);
+      const throttle = (keys.w ? 1 : 0) - (keys.s ? 1 : 0);
+      const drifting = keys.space && Math.abs(velocity.length()) > 5;
+      const nitroActive = keys.shift && nitro > 0 && keys.w;
+
+      const forward = getForward(yaw);
+      const right = getRight(yaw);
+
+      let vF = velocity.dot(forward);
+      let vR = velocity.dot(right);
+
+      const roadDist = Math.abs(car.position.x - roadCenter(car.position.z));
+      const offroad = roadDist > ROAD_WIDTH * 0.62;
+
+      const baseAccel = nitroActive ? 34 : 18;
+      const brakePower = 20;
+      const maxForward = nitroActive ? 58 : 34;
+      const maxReverse = 12;
+
+      if (throttle > 0) vF += baseAccel * dt;
+      if (throttle < 0) vF -= brakePower * dt;
+
+      if (nitroActive) {
+        nitro = Math.max(0, nitro - 28 * dt);
+        if (Math.random() < 0.75) spawnNitroParticle(forward, right);
+      } else {
+        nitro = Math.min(100, nitro + 11 * dt);
+      }
+
+      const steerSpeedFactor = 0.45 + Math.min(Math.abs(vF) / 18, 1.8);
+      const driftBoost = drifting ? 1.75 : 1.0;
+      yaw += steerInput * dt * steerSpeedFactor * driftBoost * (offroad ? 0.8 : 1.05);
+
+      const lateralPush = steerInput * Math.abs(vF) * dt * (drifting ? 0.92 : 0.24);
+      vR += lateralPush * (vF >= 0 ? 1 : -1);
+
+      const roadGrip = offroad ? 0.82 : 0.93;
+      const sideGrip = drifting ? (offroad ? 0.975 : 0.984) : (offroad ? 0.90 : 0.84);
+
+      vF *= Math.pow(roadGrip, dt * 60);
+      vR *= Math.pow(sideGrip, dt * 60);
+
+      vF = clamp(vF, -maxReverse, maxForward);
+      vR = clamp(vR, -18, 18);
+
+      velocity.copy(forward).multiplyScalar(vF).addScaledVector(right, vR);
+
+      car.position.addScaledVector(velocity, dt);
+
+      const groundY = terrainHeight(car.position.x, car.position.z);
+      car.position.y = lerp(car.position.y, groundY + carBaseHeight, 0.18);
+
+      const slope = terrainSlopeAngles(car.position.x, car.position.z);
+      car.rotation.x = lerp(car.rotation.x, slope.pitch * 0.65, 0.08);
+      car.rotation.z = lerp(
+        car.rotation.z,
+        (-steerInput * Math.min(Math.abs(vF) / 18, 1)) * (drifting ? 0.35 : 0.16) + slope.roll * 0.4,
+        0.09
+      );
+      car.rotation.y = yaw;
+
+      wheelSpin -= vF * dt * 1.8;
+      for (const w of wheels) w.rotation.x = wheelSpin;
+
+      // Soft collision with props on nearby chunks
+      const current = Math.floor(car.position.z / CHUNK_LEN);
+      for (let c = current - 2; c <= current + 2; c++) {
+        const chunk = chunks.get(c);
+        if (!chunk) continue;
+        for (const prop of chunk.props) {
+          const dx = car.position.x - prop.x;
+          const dz = car.position.z - prop.z;
+          const dy = Math.abs(car.position.y - (prop.y + 1.0));
+          const rr = carRadius + prop.radius;
+          if (dy < 4.5 && dx * dx + dz * dz < rr * rr) {
+            const len = Math.hypot(dx, dz) || 1;
+            const nx = dx / len;
+            const nz = dz / len;
+            car.position.x = prop.x + nx * rr;
+            car.position.z = prop.z + nz * rr;
+            velocity.x += nx * 6.5;
+            velocity.z += nz * 6.5;
+            velocity.multiplyScalar(0.55);
+          }
+        }
+      }
+
+      // Keep above terrain even after collision
+      const g2 = terrainHeight(car.position.x, car.position.z);
+      car.position.y = lerp(car.position.y, g2 + carBaseHeight, 0.4);
+
+      // Camera
+      const camBack = 12 + Math.min(Math.abs(vF) * 0.15, 9);
+      const camHeight = 5.5 + Math.min(Math.abs(vF) * 0.03, 2.2);
+      const desiredCam = car.position.clone()
+        .addScaledVector(forward, -camBack)
+        .add(new THREE.Vector3(0, camHeight, 0));
+      camera.position.lerp(desiredCam, 1 - Math.pow(0.0008, dt));
+      const lookAt = car.position.clone().addScaledVector(forward, 10).add(new THREE.Vector3(0, 1.6, 0));
+      camera.lookAt(lookAt);
+
+      // HUD
+      const speedKmh = Math.max(0, Math.round(velocity.length() * 3.6));
+      speedText.textContent = "Velocidade: " + speedKmh + " km/h";
+      nitroText.textContent = "Nitro: " + Math.round(nitro) + "%";
+      nitroBar.style.width = nitro + "%";
+    }
+
+    // ====== Init ======
+    car.position.set(0, terrainHeight(0, 0) + carBaseHeight, 0);
+    yaw = 0;
+    car.rotation.y = yaw;
+    camera.position.set(0, 8, -14);
+    camera.lookAt(0, 1, 0);
+
+    updateChunks(car.position.z);
+
+    // ====== Main loop ======
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.033);
+
+      updateChunks(car.position.z);
+      updateCar(dt);
+      updateParticles(dt);
+
+      renderer.render(scene, camera);
+    }
+
+    animate();
+
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight, false);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    });
+  })();
+  </script>
+
+<div id="mainMenu" style="position:fixed;inset:0;background:linear-gradient(#1a1a1a,#000);color:white;z-index:9999;font-family:Arial;display:flex;align-items:center;justify-content:center;">
+  <div style="max-width:700px;text-align:center">
+    <h1>Ana Paula in Horizon</h1>
+    <p>Você jogará com Ana Paula na cidade fictícia de Montividuense, na Paraíba.</p>
+    <p>Locais famosos: Bar do Seu João e Boate do Seu Arnaldo.</p>
+    <p>Use DRIFT, NITRO e explore o mundo procedural.</p>
+    <button id="playBtn" style="font-size:24px;padding:12px 28px;cursor:pointer">JOGAR</button>
+  </div>
+</div>
+
+<div id="speedometer" style="position:fixed;right:15px;bottom:15px;background:rgba(0,0,0,.55);color:white;padding:12px;border-radius:12px;font-family:Arial;z-index:50">
+  <div style="font-size:14px">VELOCIDADE</div>
+  <div id="speedValue" style="font-size:34px;font-weight:bold">0</div>
+  <div>km/h</div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+ const btn=document.getElementById('playBtn');
+ if(btn){
+   btn.onclick=()=>{
+      document.getElementById('mainMenu').style.display='none';
+   };
+ }
+});
+</script>
+
+
+<script>
+(function(){
+  function updateSpeed(){
+    const speedEl = document.getElementById('speedValue');
+    const hud = document.getElementById('hud');
+    if(speedEl && hud){
+      const m = (hud.textContent || '').match(/(\d+)/);
+      if(m) speedEl.textContent = m[1];
+    }
+    requestAnimationFrame(updateSpeed);
+  }
+  updateSpeed();
+})();
+</script>
+
+
+<script>
+// Ajustes de velocidade e sensação de velocidade
+(function(){
+  const style = document.createElement('style');
+  style.innerHTML = `
+  canvas{image-rendering:auto;}
+  `;
+  document.head.appendChild(style);
+
+  // Atualiza velocímetro para parecer escala de 70 km/h
+  function update(){
+    const hud = document.getElementById('hud');
+    const speedValue = document.getElementById('speedValue');
+    if(hud && speedValue){
+      const m = (hud.textContent||'').match(/(\d+)/);
+      if(m){
+        let v = parseInt(m[1],10);
+        v = Math.min(70, Math.round(v * 1.8));
+        speedValue.textContent = v;
+        hud.textContent = v + " km/h";
+      }
+    }
+    requestAnimationFrame(update);
+  }
+  update();
+
+  // Leve efeito de velocidade
+  let t=0;
+  function speedFx(){
+    t += 0.02;
+    const c = document.querySelector('canvas');
+    if(c){
+      c.style.transform = 'scale(' + (1 + Math.sin(t)*0.0015) + ')';
+    }
+    requestAnimationFrame(speedFx);
+  }
+  speedFx();
+})();
+</script>
+
+
+<div id="gameInfo" style="position:fixed;left:10px;top:10px;z-index:60;color:white;
+font-family:Arial;background:rgba(0,0,0,.45);padding:10px;border-radius:8px">
+<b>Ana Paula in Horizon</b><br>
+W = Acelerar<br>
+S = Frear / Ré<br>
+A/D = Virar<br>
+SPACE = Drift<br>
+SHIFT = Nitro
+</div>
+
+<button id="backMenuBtn" style="position:fixed;left:10px;bottom:10px;z-index:70;
+padding:8px 12px;cursor:pointer">Voltar ao Menu</button>
+
+<script>
+(function(){
+ const btn=document.getElementById('backMenuBtn');
+ if(btn){
+   btn.onclick=()=>{
+     const m=document.getElementById('mainMenu');
+     if(m) m.style.display='flex';
+   };
+ }
+
+ // Sincronização mais robusta do velocímetro
+ let last=0;
+ function syncSpeed(){
+   const speedValue=document.getElementById('speedValue');
+   const hud=document.getElementById('hud');
+   if(speedValue){
+      let found=null;
+
+      if(hud){
+        const m=(hud.textContent||'').match(/(\d+)/);
+        if(m) found=parseInt(m[1],10);
+      }
+
+      if(found===null){
+        const txt=document.body.innerText;
+        const m=txt.match(/(\d+)\s*km\/h/i);
+        if(m) found=parseInt(m[1],10);
+      }
+
+      if(found!==null){
+        last=found;
+        speedValue.textContent=found;
+      }else{
+        speedValue.textContent=last;
+      }
+   }
+   requestAnimationFrame(syncSpeed);
+ }
+ syncSpeed();
+})();
+</script>
+
+
+<style>
+#creditsScreen{
+display:none;position:fixed;inset:0;z-index:10000;
+background:#000;color:#fff;font-family:Arial;
+align-items:center;justify-content:center;text-align:center;
+}
+</style>
+
+<div id="creditsScreen">
+<div>
+<h1>Créditos</h1>
+<p>Feito por Eduardo Guareshi</p>
+<p>em um dia cansativo de aula</p>
+<p>(24/jun/26)</p>
+<button onclick="document.getElementById('creditsScreen').style.display='none'">Voltar</button>
+</div>
+</div>
+
+<audio id="bgm" loop>
+  <source src="musica.mp3" type="audio/mpeg">
+</audio>
+
+<script>
+(function(){
+
+const menu=document.getElementById('mainMenu');
+if(menu){
+
+  // remove velocímetro do menu
+  const speed=document.getElementById('speedometer');
+  if(speed){
+    const obs=new MutationObserver(()=>{
+      speed.style.display=(menu.style.display==='none')?'block':'none';
+    });
+    obs.observe(menu,{attributes:true});
+    speed.style.display='none';
+  }
+
+  // botão créditos
+  const btn=document.createElement('button');
+  btn.textContent='CRÉDITOS';
+  btn.style.marginLeft='10px';
+  btn.style.fontSize='24px';
+  btn.onclick=()=>{
+    document.getElementById('creditsScreen').style.display='flex';
+  };
+
+  const play=document.getElementById('playBtn');
+  if(play && play.parentNode){
+    play.parentNode.appendChild(btn);
+
+    const old=play.onclick;
+    play.onclick=function(){
+      if(old) old();
+      const a=document.getElementById('bgm');
+      if(a){ a.volume=0.5; a.play().catch(()=>{}); }
+    };
+  }
+
+  // placa de entrada da cidade
+  const sign=document.createElement('div');
+  sign.id='citySign';
+  sign.innerHTML='BEM-VINDO A MONTIVIDUENSE<br><small>Pior que aqui só Raccoon City</small>';
+  sign.style.cssText='position:fixed;top:80px;left:50%;transform:translateX(-50%);background:#ffd700;color:#000;padding:18px;border:4px solid #333;font-weight:bold;z-index:5000;text-align:center;border-radius:10px';
+  document.body.appendChild(sign);
+
+  setTimeout(()=>{
+    const s=document.getElementById('citySign');
+    if(s) s.remove();
+  },7000);
+}
+
+// efeito de velocidade simples
+let t=0;
+function fx(){
+ const hud=document.getElementById('hud');
+ const canvas=document.querySelector('canvas');
+ if(hud && canvas){
+   const m=(hud.textContent||'').match(/(\d+)/);
+   let v=m?parseInt(m[1],10):0;
+   let scale=1+Math.min(v/70,1)*0.02;
+   canvas.style.transform='scale('+scale+')';
+ }
+ requestAnimationFrame(fx);
+}
+fx();
+
+})();
+</script>
+
+</body>
+</html>
